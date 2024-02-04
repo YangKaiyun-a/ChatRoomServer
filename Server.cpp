@@ -7,16 +7,16 @@
 #include "DBManager.h"
 
 #include <iostream>
-#include <sys/types.h>
 #include <cstring>
 #include <json/json.h>
 #include <arpa/inet.h>
 #include <thread>
+#include <algorithm>
 
 
 Server::Server(int port)
 {
-    //sockfd用来监听客户端请求
+    //m_sockfd用来监听客户端请求
     m_sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (m_sockfd < 0)
     {
@@ -55,7 +55,7 @@ void Server::start()
     {
         //每个ip只创建一个
         m_newsockfd = accept(m_sockfd, (struct sockaddr *) &cli_addr, &clilen);
-        if (m_newsockfd < 0)
+        if(m_newsockfd < 0)
         {
             error("ERROR on accept");
             continue;
@@ -71,70 +71,63 @@ void Server::start()
     }
 }
 
-//登录请求返回
+//处理登录请求
 void Server::handleLogin(int sockfd, LoginResultType type)
 {
-    Json::Value root;
-    root["type"] = LoginResult;
+    //发送登录结果
+    sendLoginResult(sockfd, type);
 
-    Json::Value messages;
-    messages["code"] = type;
-
-    root["messages"] = messages;
-
-    //将JSON对象转换为字符串
-    Json::StreamWriterBuilder builder;
-    std::string jsonString = Json::writeString(builder, root);
-
-    ssize_t bytesSent = write(sockfd, jsonString.c_str(), jsonString.length());
-    if (bytesSent < 0)
-    {
-        // 发送失败，处理错误
-        perror("Error sending message");
-    }
+    //发送当前在线用户
+    sendOnlineUser();
 }
 
-//注册请求返回
+//处理注册请求
 void Server::handleSignUp(int sockfd, LoginResultType type)
 {
-    Json::Value root;
-    root["type"] = SignupResult;
-
-    Json::Value messages;
-    messages["code"] = type;
-
-    root["messages"] = messages;
-
-    //将JSON对象转换为字符串
-    Json::StreamWriterBuilder builder;
-    std::string jsonString = Json::writeString(builder, root);
-
-    ssize_t bytesSent = write(sockfd, jsonString.c_str(), jsonString.length());
-    if (bytesSent < 0)
-    {
-        // 发送失败，处理错误
-        perror("Error sending message");
-    }
+    //发送注册结果
+    sandSingUpResult(sockfd, type);
 }
 
+//在单独的线程中与每一个客户端进行通信
 void Server::handleClient(int clientSockfd, char *ip)
 {
+    int circleCount = 1;
+    std::string curUserName = "unknown_userName";
+
     while(true)
     {
-        //存储接收到的消息
-        char buffer[256];
-        bzero(buffer, 256);
-        int n = read(clientSockfd, buffer, 255);
-        if(n < 0)
+        //接收消息长度
+        uint32_t messageLength;
+        int n = read(clientSockfd, &messageLength, sizeof(messageLength));
+        if(n <= 0)
         {
             perror("ERROR reading from socket");
-            std::cerr << "Client :" << ip << "  Client disconnected." << std::endl;
+
+            std::cerr << curUserName << "已下线；" << "Client：" << ip << std::endl;
+
+            //将当前线程用户从已登录用户表中移除
+            DBManager::instance()->removeLoggedInUser(curUserName);
+
+            // 从 m_clientSockets 中移除断开连接的套接字
+            auto iter = std::find(m_clientSockets.begin(), m_clientSockets.end(), clientSockfd);
+            if (iter != m_clientSockets.end())
+            {
+                m_clientSockets.erase(iter);
+            }
+
+            //发送当前在线用户
+            sendOnlineUser();
+
             break;
         }
-        else if(n == 0)
+        uint32_t dataLength = ntohl(messageLength);
+
+        // 根据长度读取实际消息
+        std::string buffer(dataLength, '\0');
+        n = read(clientSockfd, &buffer[0], dataLength);
+        if(n <= 0)
         {
-            //客户端关闭了连接
-            std::cout << "Client disconnected." << std::endl;
+            perror("ERROR reading from socket");
             break;
         }
 
@@ -146,6 +139,12 @@ void Server::handleClient(int clientSockfd, char *ip)
             int messageType = root["type"].asInt();
             std::string userName = root["messages"]["username"].asString();
             std::string passWord = root["messages"]["password"].asString();
+
+            //只在第一次循环时获取当前线程的用户名
+            if(circleCount == 1)
+            {
+                curUserName = userName;
+            }
 
             switch (messageType)
             {
@@ -166,7 +165,7 @@ void Server::handleClient(int clientSockfd, char *ip)
                     //正常信息，转发给所有客户端
                     for(int sockfd : m_clientSockets)
                     {
-                        write(sockfd, buffer, n);
+                        sendWithLengthPrefix(sockfd, buffer);
                     }
                     break;
                 }
@@ -178,6 +177,107 @@ void Server::handleClient(int clientSockfd, char *ip)
         {
             std::cerr << "Failed to parse Json:" << reader.getFormattedErrorMessages();
         }
+
+        circleCount++;
     }
     close(clientSockfd);
+}
+
+void Server::sendOnlineUser()
+{
+    std::vector<std::string> onlineUsers = DBManager::instance()->getLoggedInUserAllRecords();
+    Json::Value root;
+    Json::Value usernames(Json::arrayValue);
+    Json::Value messages(Json::objectValue);
+
+    for (const auto& user : onlineUsers)
+    {
+        usernames.append(user);
+    }
+
+    messages["usernames"] = usernames;
+    root["type"] = OnlineUsers;
+    root["messages"] = messages;
+
+    std::string jsonString = Json::writeString(Json::StreamWriterBuilder(), root);
+
+    for (int sockfd : m_clientSockets)
+    {
+        sendWithLengthPrefix(sockfd, jsonString);
+    }
+}
+
+//发送登录结果
+void Server::sendLoginResult(int sockfd, LoginResultType type)
+{
+    Json::Value root;
+    root["type"] = LoginResult;
+
+    Json::Value messages;
+    messages["code"] = type;
+
+    root["messages"] = messages;
+
+    //将JSON对象转换为字符串
+    Json::StreamWriterBuilder builder;
+    std::string jsonString = Json::writeString(builder, root);
+
+    sendWithLengthPrefix(sockfd, jsonString);
+}
+
+//发送注册结果
+void Server::sandSingUpResult(int sockfd, LoginResultType type)
+{
+    Json::Value root;
+    root["type"] = SignupResult;
+
+    Json::Value messages;
+    messages["code"] = type;
+
+    root["messages"] = messages;
+
+    //将JSON对象转换为字符串
+    Json::StreamWriterBuilder builder;
+    std::string jsonString = Json::writeString(builder, root);
+
+    sendWithLengthPrefix(sockfd, jsonString);
+}
+
+//服务端发送消息
+void Server::sendWithLengthPrefix(int sockfd, const std::string &message)
+{
+    uint32_t length = htonl(static_cast<uint32_t>(message.size()));
+
+    std::cout << "消息长度：" << message.size() << "B" << "，转换后的长度：" << length <<std::endl;
+    std::cout << "发送：" << message << std::endl;
+
+    //发送消息长度
+    ssize_t bytesSent = write(sockfd, &length, sizeof(length));
+    if(bytesSent < 0)
+    {
+        //发送失败，处理错误
+        perror("Error sending message length");
+        return;
+    }
+    else if(bytesSent < sizeof(length))
+    {
+        //未完全发送
+        std::cerr << "Incomplete write for message length" << std::endl;
+        return;
+    }
+
+    //发送消息本身
+    bytesSent = write(sockfd, message.c_str(), message.size());
+    if(bytesSent < 0)
+    {
+        //发送失败，处理错误
+        perror("Error sending message");
+        return;
+    }
+    else if(static_cast<size_t>(bytesSent) < message.size())
+    {
+        //未完全发送
+        std::cerr << "Incomplete write for message" << std::endl;
+        return;
+    }
 }

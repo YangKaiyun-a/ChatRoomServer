@@ -20,12 +20,25 @@ public:
     explicit Server(int port);
     ~Server();
     void start();
-    static void handleLogin(int sockfd, LoginResultType type);
-    static void handleSignUp(int sockfd, LoginResultType type);
+    //处理登录逻辑
+    void handleLogin(int sockfd, LoginResultType type);
+    //发送登录结果
+    static void sendLoginResult(int sockfd, LoginResultType type);
+    //发送在线人数
+    void sendOnlineUser();
+    //处理注册逻辑
+    void handleSignUp(int sockfd, LoginResultType type);
+    //发送登录结果
+    static void sandSingUpResult(int sockfd, LoginResultType type);
+    //与每一个用户进行通信
     void handleClient(int clientSockfd, char *ip);
+    //发送消息
+    static void sendWithLengthPrefix(int sockfd, const std::string &message);
+
+
 
 private:
-    int m_sockfd, m_newsockfd{}, m_port;
+    int m_sockfd, m_newsockfd, m_port;
     socklen_t clilen{};
     struct sockaddr_in serv_addr{}, cli_addr{};
     std::vector<int> m_clientSockets;
