@@ -12,6 +12,9 @@
 #include <arpa/inet.h>
 #include <thread>
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 
 Server::Server(int port)
@@ -51,9 +54,9 @@ void Server::start()
     listen(m_sockfd, 5);
     clilen = sizeof(cli_addr);
 
-    while (true)
+    while(true)
     {
-        //每个ip只创建一个
+        //每个ip只创建一个描述符
         m_newsockfd = accept(m_sockfd, (struct sockaddr *) &cli_addr, &clilen);
         if(m_newsockfd < 0)
         {
@@ -69,23 +72,33 @@ void Server::start()
         std::thread clientThread(&Server::handleClient, this, m_newsockfd, ip);
         clientThread.detach();
     }
+
+    close(m_sockfd);
 }
 
 //处理登录请求
-void Server::handleLogin(int sockfd, LoginResultType type)
+void Server::handleLogin(int sockfd, const std::string &userName, const std::string &password)
 {
-    //发送登录结果
-    sendLoginResult(sockfd, type);
+    LoginResultType result = DBManager::instance()->validateCredentials(userName, password);
 
-    //发送当前在线用户
-    sendOnlineUser();
+    //发送登录结果
+    sendLoginResult(sockfd, result, userName);
+
+    if(result == Login_Successed)
+    {
+        //发送当前在线用户给所有人
+        sendOnlineUser();
+
+        //发送之前的20条聊天记录给新登录用户
+        sendLastedChatMessages(sockfd);
+    }
 }
 
 //处理注册请求
-void Server::handleSignUp(int sockfd, LoginResultType type)
+void Server::handleSignUp(int sockfd, const std::string &userName, const std::string &password)
 {
     //发送注册结果
-    sandSingUpResult(sockfd, type);
+    sandSingUpResult(sockfd, DBManager::instance()->signUpNewAccount(userName, password));
 }
 
 //在单独的线程中与每一个客户端进行通信
@@ -115,7 +128,7 @@ void Server::handleClient(int clientSockfd, char *ip)
                 m_clientSockets.erase(iter);
             }
 
-            //发送当前在线用户
+            //发送当前在线用户给所有人
             sendOnlineUser();
 
             break;
@@ -151,22 +164,19 @@ void Server::handleClient(int clientSockfd, char *ip)
                 case Login:
                 {
                     //处理登录
-                    handleLogin(clientSockfd, DBManager::instance()->validateCredentials(userName, passWord));
+                    handleLogin(clientSockfd, userName, passWord);
                     break;
                 }
                 case SignUp:
                 {
                     //处理注册
-                    handleSignUp(clientSockfd, DBManager::instance()->signUpNewAccount(userName, passWord));
+                    handleSignUp(clientSockfd, userName, passWord);
                     break;
                 }
                 case Normal:
                 {
-                    //正常信息，转发给所有客户端
-                    for(int sockfd : m_clientSockets)
-                    {
-                        sendWithLengthPrefix(sockfd, buffer);
-                    }
+                    //处理正常聊天信息
+                    handleNormalMessages(buffer);
                     break;
                 }
                 default:
@@ -183,6 +193,7 @@ void Server::handleClient(int clientSockfd, char *ip)
     close(clientSockfd);
 }
 
+//发送当前在线用户给所有人
 void Server::sendOnlineUser()
 {
     std::vector<std::string> onlineUsers = DBManager::instance()->getLoggedInUserAllRecords();
@@ -208,13 +219,14 @@ void Server::sendOnlineUser()
 }
 
 //发送登录结果
-void Server::sendLoginResult(int sockfd, LoginResultType type)
+void Server::sendLoginResult(int sockfd, LoginResultType type, const std::string &userName)
 {
     Json::Value root;
     root["type"] = LoginResult;
 
     Json::Value messages;
     messages["code"] = type;
+    messages["username"] = userName;
 
     root["messages"] = messages;
 
@@ -248,7 +260,6 @@ void Server::sendWithLengthPrefix(int sockfd, const std::string &message)
 {
     uint32_t length = htonl(static_cast<uint32_t>(message.size()));
 
-    std::cout << "消息长度：" << message.size() << "B" << "，转换后的长度：" << length <<std::endl;
     std::cout << "发送：" << message << std::endl;
 
     //发送消息长度
@@ -279,5 +290,79 @@ void Server::sendWithLengthPrefix(int sockfd, const std::string &message)
         //未完全发送
         std::cerr << "Incomplete write for message" << std::endl;
         return;
+    }
+}
+
+//处理正常聊天信息
+void Server::handleNormalMessages(const std::string &message)
+{
+    Json::Value root;
+    Json::Reader reader;
+
+    if(reader.parse(message, root))
+    {
+        std::string username = root["messages"]["username"].asString();
+        std::string chat = root["messages"]["chat"].asString();
+
+        //当前时间
+        std::string currentTimestamp = getCurrentTimestamp();
+
+        //存入聊天记录表
+        if(!DBManager::instance()->addSingleChatHistory(username, chat, currentTimestamp))
+        {
+            return;
+        }
+
+        //组合为新json
+        root["messages"]["date"] = currentTimestamp;
+        std::string updatedMessage = root.toStyledString();
+
+        //将JSON对象转换为字符串
+        Json::StreamWriterBuilder builder;
+        std::string jsonString = Json::writeString(builder, root);
+
+        //转发给所有客户端
+        for(int sockfd : m_clientSockets)
+        {
+            sendWithLengthPrefix(sockfd, updatedMessage);
+        }
+    }
+    else
+    {
+        std::cerr << "Failed to parse JSON: " << reader.getFormattedErrorMessages();
+    }
+}
+
+//获取当前时间
+std::string Server::getCurrentTimestamp()
+{
+    //获取当前时间点
+    auto now = std::chrono::system_clock::now();
+
+    //转换为时间_t对象
+    auto now_c = std::chrono::system_clock::to_time_t(now);
+
+    //将时间转换为tm结构
+    std::tm now_tm = *std::localtime(&now_c);
+
+    //使用stringstream格式化时间
+    std::stringstream ss;
+    ss << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S");
+
+    return ss.str();
+}
+
+void Server::sendLastedChatMessages(int sockfd)
+{
+    std::vector<std::string> messagesVector = DBManager::instance()->getRecordsFormChatHistory(20);
+
+    if(messagesVector.empty())
+    {
+        return;
+    }
+
+    for(const auto& chatRecord : messagesVector)
+    {
+        sendWithLengthPrefix(sockfd, chatRecord);
     }
 }

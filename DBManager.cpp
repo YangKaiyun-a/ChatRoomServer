@@ -8,6 +8,8 @@
 #include <linux/limits.h>
 #include <cstring>
 #include <filesystem>
+#include <json/json.h>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -24,6 +26,16 @@ const char* createTableSQL =
 const char* createLoggedInUserTableSQL =
         "CREATE TABLE IF NOT EXISTS LoggedInUsers ("
         "username TEXT PRIMARY KEY);";
+
+//创建聊天记录表
+const char* createChatHistoryTableSQL = R"(
+        CREATE TABLE IF NOT EXISTS ChatHistory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    )";
 
 DBManager *DBManager::m_dbManager =  nullptr;
 
@@ -90,6 +102,16 @@ bool DBManager::connectDataBase()
         return false;
     }
 
+    //创建聊天记录表（如果不存在）
+    rc = sqlite3_exec(m_db, createChatHistoryTableSQL, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK)
+    {
+        std::cerr << "SQL error: " << errMsg << std::endl;
+        sqlite3_free(errMsg);
+        sqlite3_close(m_db);
+        return false;
+    }
+
     return true;
 }
 
@@ -104,7 +126,7 @@ std::string DBManager::getExecutablePath()
 }
 
 //验证密码
-LoginResultType DBManager::validateCredentials(const std::string &username, const std::string &password)
+LoginResultType DBManager::validateCredentials(const std::string &userName, const std::string &password)
 {
     sqlite3_stmt* stmt;
     std::string query = "SELECT Password FROM " + DATABASETABLE_NAME + " WHERE Account = ?";
@@ -116,7 +138,7 @@ LoginResultType DBManager::validateCredentials(const std::string &username, cons
         return Erro_Sql;
     }
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
 
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
     {
@@ -126,7 +148,7 @@ LoginResultType DBManager::validateCredentials(const std::string &username, cons
             sqlite3_finalize(stmt);
 
             //在已登录用户表中添加一个用户
-            return addLoggedInUser(username);
+            return addLoggedInUser(userName);
         }
         else
         {
@@ -147,7 +169,7 @@ LoginResultType DBManager::validateCredentials(const std::string &username, cons
 }
 
 //添加新用户
-LoginResultType DBManager::signUpNewAccount(const std::string& username, const std::string& password)
+LoginResultType DBManager::signUpNewAccount(const std::string& userName, const std::string& password)
 {
     //stmt用于指向预备语句对象
     sqlite3_stmt* stmt;
@@ -162,7 +184,7 @@ LoginResultType DBManager::signUpNewAccount(const std::string& username, const s
     }
 
     //绑定查询参数
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
 
     //执行语句
     rc = sqlite3_step(stmt);
@@ -188,7 +210,7 @@ LoginResultType DBManager::signUpNewAccount(const std::string& username, const s
         return Erro_Sql;
     }
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, password.c_str(), -1, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
@@ -204,7 +226,7 @@ LoginResultType DBManager::signUpNewAccount(const std::string& username, const s
 }
 
 //添加一条记录到已登录用户表
-LoginResultType DBManager::addLoggedInUser(const std::string &username)
+LoginResultType DBManager::addLoggedInUser(const std::string &userName)
 {
     //检查用户是否已登录
     std::string sqlCheck = "SELECT * FROM LoggedInUsers WHERE username = ?;";
@@ -216,7 +238,7 @@ LoginResultType DBManager::addLoggedInUser(const std::string &username)
         return Erro_Sql;
     }
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
     rc = sqlite3_step(stmt);
     if (rc == SQLITE_ROW)
     {
@@ -236,7 +258,7 @@ LoginResultType DBManager::addLoggedInUser(const std::string &username)
         return Erro_Sql;
     }
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE)
@@ -250,7 +272,7 @@ LoginResultType DBManager::addLoggedInUser(const std::string &username)
 
 }
 
-void DBManager::removeLoggedInUser(const std::string &username)
+void DBManager::removeLoggedInUser(const std::string &userName)
 {
     const std::string sql = "DELETE FROM LoggedInUsers WHERE username = ?;";
     sqlite3_stmt* stmt;
@@ -262,7 +284,7 @@ void DBManager::removeLoggedInUser(const std::string &username)
         return;
     }
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE)
@@ -296,3 +318,79 @@ std::vector<std::string> DBManager::getLoggedInUserAllRecords()
 
     return userNameVector;
 }
+
+bool DBManager::addSingleChatHistory(const std::string &userName, const std::string &message, const std::string &timeStamp)
+{
+    sqlite3_stmt *stmt;
+    const char *insertSql = "INSERT INTO ChatHistory (username, message, timestamp) VALUES (?, ?, ?);";
+
+    if(sqlite3_prepare_v2(m_db, insertSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Error preparing insert statement: " << sqlite3_errmsg(m_db) << std::endl;
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, timeStamp.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool success = true;
+    if (sqlite3_step(stmt) != SQLITE_DONE)
+    {
+        std::cerr << "Error inserting chat message to database: " << sqlite3_errmsg(m_db) << std::endl;
+        success = false;
+    }
+
+    sqlite3_finalize(stmt);
+    return success;
+
+    return false;
+}
+
+std::vector<std::string> DBManager::getRecordsFormChatHistory(int count)
+{
+    std::vector<std::string> messagesVector;
+
+    std::string query = "SELECT username, message, timestamp FROM ChatHistory ORDER BY timestamp DESC LIMIT ?";
+    sqlite3_stmt *stmt;
+
+    if(sqlite3_prepare_v2(m_db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        //绑定查询参数
+        sqlite3_bind_int(stmt, 1, count);
+
+        //执行查询
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            Json::Value root;
+            Json::Value messages;
+
+            root["type"] = Normal;
+
+            messages["username"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            messages["chat"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            messages["date"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            root["messages"] = messages;
+
+            //将JSON对象转换为字符串
+            Json::StreamWriterBuilder builder;
+            std::string jsonString = Json::writeString(builder, root);
+
+            messagesVector.push_back(jsonString);
+        }
+
+        sqlite3_finalize(stmt);
+    }
+    else
+    {
+        std::cerr << "Error preparing query: " << sqlite3_errmsg(m_db) << std::endl;
+        return messagesVector;
+    }
+
+    //逆序容器
+    std::reverse(messagesVector.begin(), messagesVector.end());
+
+    return messagesVector;
+}
+
+

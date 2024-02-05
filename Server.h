@@ -21,24 +21,28 @@ public:
     ~Server();
     void start();
     //处理登录逻辑
-    void handleLogin(int sockfd, LoginResultType type);
+    void handleLogin(int sockfd, const std::string &userName, const std::string &password);
     //发送登录结果
-    static void sendLoginResult(int sockfd, LoginResultType type);
+    static void sendLoginResult(int sockfd, LoginResultType type, const std::string &userName);
     //发送在线人数
     void sendOnlineUser();
     //处理注册逻辑
-    void handleSignUp(int sockfd, LoginResultType type);
+    static void handleSignUp(int sockfd, const std::string &userName, const std::string &password);
     //发送登录结果
     static void sandSingUpResult(int sockfd, LoginResultType type);
     //与每一个用户进行通信
     void handleClient(int clientSockfd, char *ip);
     //发送消息
     static void sendWithLengthPrefix(int sockfd, const std::string &message);
-
-
+    //处理正常聊天信息
+    void handleNormalMessages(const std::string &message);
+    //获取当前时间
+    static std::string getCurrentTimestamp();
+    //发送最新20条聊天记录给新登录用户
+    static void sendLastedChatMessages(int sockfd);
 
 private:
-    int m_sockfd, m_newsockfd, m_port;
+    int m_sockfd, m_newsockfd{}, m_port;
     socklen_t clilen{};
     struct sockaddr_in serv_addr{}, cli_addr{};
     std::vector<int> m_clientSockets;
