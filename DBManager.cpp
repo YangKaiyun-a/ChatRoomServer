@@ -14,21 +14,21 @@
 
 namespace fs = std::filesystem;
 
-const std::string DATABASE_NAME = "userdatabase.db3";
-const std::string DATABASETABLE_NAME = "AccountTable";
+const std::string DATABASE_NAME = "userdatabase.db3";       ///< 数据库名称
+const std::string DATABASETABLE_NAME = "AccountTable";      ///< 用户数据表
 
-//创建用户表
+//创建用户表sql
 const char* createTableSQL =
         "CREATE TABLE IF NOT EXISTS AccountTable ("
         "Account TEXT PRIMARY KEY,"
         "Password TEXT);";
 
-//创建已登录用户表
+//创建已登录用户表sql
 const char* createLoggedInUserTableSQL =
         "CREATE TABLE IF NOT EXISTS LoggedInUsers ("
         "username TEXT PRIMARY KEY);";
 
-//创建聊天记录表
+//创建聊天记录表sql
 const char* createChatHistoryTableSQL = R"(
         CREATE TABLE IF NOT EXISTS ChatHistory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +95,16 @@ bool DBManager::connectDataBase()
 
     //创建已登录用户表（如果不存在）
     rc = sqlite3_exec(m_db, createLoggedInUserTableSQL, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK)
+    {
+        std::cerr << "SQL error: " << errMsg << std::endl;
+        sqlite3_free(errMsg);
+        sqlite3_close(m_db);
+        return false;
+    }
+
+    //每次启动服务器时都清空已登录用户表
+    rc = sqlite3_exec(m_db, "DELETE FROM LoggedInUsers", nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK)
     {
         std::cerr << "SQL error: " << errMsg << std::endl;

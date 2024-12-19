@@ -49,7 +49,7 @@ Server::~Server()
     close(m_sockfd);
 }
 
-void Server::start()
+[[noreturn]] void Server::start()
 {
     listen(m_sockfd, 5);
     clilen = sizeof(cli_addr);
@@ -57,8 +57,8 @@ void Server::start()
     while(true)
     {
         //每个ip只创建一个描述符
-        m_newsockfd = accept(m_sockfd, (struct sockaddr *) &cli_addr, &clilen);
-        if(m_newsockfd < 0)
+        int newSockfd = accept(m_sockfd, (struct sockaddr *) &cli_addr, &clilen);
+        if(newSockfd < 0)
         {
             error("ERROR on accept");
             continue;
@@ -66,19 +66,18 @@ void Server::start()
 
         char *ip = inet_ntoa(cli_addr.sin_addr);
         std::cout << "Client connected from " << ip << std::endl;
-        m_clientSockets.push_back(m_newsockfd);
+        m_clientSockets.push_back(newSockfd);
 
         //创建一个新线程处理这个客户端
-        std::thread clientThread(&Server::handleClient, this, m_newsockfd, ip);
+        std::thread clientThread(&Server::handleClient, this, newSockfd, ip);
         clientThread.detach();
     }
-
-    close(m_sockfd);
 }
 
 //处理登录请求
 void Server::handleLogin(int sockfd, const std::string &userName, const std::string &password)
 {
+    //验证用户名和密码
     LoginResultType result = DBManager::instance()->validateCredentials(userName, password);
 
     //发送登录结果
@@ -109,7 +108,7 @@ void Server::handleClient(int clientSockfd, char *ip)
 
     while(true)
     {
-        //接收消息长度
+        //每次接收32位的消息长度
         uint32_t messageLength;
         int n = read(clientSockfd, &messageLength, sizeof(messageLength));
         if(n <= 0)
@@ -134,6 +133,7 @@ void Server::handleClient(int clientSockfd, char *ip)
             break;
         }
 
+        //将网络字节顺序转换为主机字节顺序
         uint32_t dataLength = ntohl(messageLength);
 
         // 根据长度读取实际消息

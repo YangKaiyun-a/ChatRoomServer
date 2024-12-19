@@ -35,7 +35,7 @@ public:
 private:
     sqlite3 *m_db{};
     static DBManager* m_dbManager;
-    std::string m_dbPath;
+    std::string m_dbPath;               ///< 数据库文件路径
 };
 
 

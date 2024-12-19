@@ -19,7 +19,8 @@ class Server {
 public:
     explicit Server(int port);
     ~Server();
-    void start();
+
+    [[noreturn]] void start();
     //处理登录逻辑
     void handleLogin(int sockfd, const std::string &userName, const std::string &password);
     //发送登录结果
@@ -44,7 +45,8 @@ public:
     static void sendLastedChatMessages(int sockfd);
 
 private:
-    int m_sockfd, m_newsockfd{}, m_port;
+    int m_sockfd;           ///< socket对象，监听客户端请求
+    int m_port;             ///< 监听端口
     socklen_t clilen{};
     struct sockaddr_in serv_addr{}, cli_addr{};
     std::vector<int> m_clientSockets;
