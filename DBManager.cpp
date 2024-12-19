@@ -4,11 +4,12 @@
 
 #include "DBManager.h"
 #include "iostream"
+#include "ThirdParty/json/json.h"
+
 #include <unistd.h>
 #include <linux/limits.h>
 #include <cstring>
 #include <filesystem>
-#include <json/json.h>
 #include <algorithm>
 
 namespace fs = std::filesystem;
@@ -281,7 +282,6 @@ void DBManager::removeLoggedInUser(const std::string &userName)
     if (rc != SQLITE_OK)
     {
         std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(m_db) << std::endl;
-        return;
     }
 
     sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_STATIC);
@@ -319,10 +319,11 @@ std::vector<std::string> DBManager::getLoggedInUserAllRecords()
     return userNameVector;
 }
 
-bool DBManager::addSingleChatHistory(const std::string &userName, const std::string &message, const std::string &timeStamp)
+//将完整的message存入数据库
+bool DBManager::addSingleChatHistory(const std::string &userName, const std::string &message, int messageType, const std::string &timeStamp)
 {
     sqlite3_stmt *stmt;
-    const char *insertSql = "INSERT INTO ChatHistory (username, message, timestamp) VALUES (?, ?, ?);";
+    const char *insertSql = "INSERT INTO ChatHistory (username, message, message_type, timestamp) VALUES (?, ?, ?, ?);";
 
     if(sqlite3_prepare_v2(m_db, insertSql, -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -332,7 +333,8 @@ bool DBManager::addSingleChatHistory(const std::string &userName, const std::str
 
     sqlite3_bind_text(stmt, 1, userName.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, message.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, timeStamp.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, messageType);
+    sqlite3_bind_text(stmt, 4, timeStamp.c_str(), -1, SQLITE_TRANSIENT);
 
     bool success = true;
     if (sqlite3_step(stmt) != SQLITE_DONE)
@@ -343,15 +345,14 @@ bool DBManager::addSingleChatHistory(const std::string &userName, const std::str
 
     sqlite3_finalize(stmt);
     return success;
-
-    return false;
 }
 
+//获取最新的n条聊天记录
 std::vector<std::string> DBManager::getRecordsFormChatHistory(int count)
 {
     std::vector<std::string> messagesVector;
 
-    std::string query = "SELECT username, message, timestamp FROM ChatHistory ORDER BY timestamp DESC LIMIT ?";
+    std::string query = "SELECT message, message_type FROM ChatHistory ORDER BY timestamp DESC LIMIT ?";
     sqlite3_stmt *stmt;
 
     if(sqlite3_prepare_v2(m_db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
@@ -363,20 +364,25 @@ std::vector<std::string> DBManager::getRecordsFormChatHistory(int count)
         while (sqlite3_step(stmt) == SQLITE_ROW)
         {
             Json::Value root;
+            Json::Reader reader;
+            std::string messageStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+
             Json::Value messages;
+            if(reader.parse(messageStr, messages))
+            {
+                root["type"] = sqlite3_column_int(stmt, 1);
+                root["messages"] = messages; // 这里messages已经是一个Json::Value对象
 
-            root["type"] = Normal;
+                //将JSON对象转换为字符串
+                Json::StreamWriterBuilder builder;
+                std::string jsonString = Json::writeString(builder, root);
 
-            messages["username"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            messages["chat"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            messages["date"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-            root["messages"] = messages;
-
-            //将JSON对象转换为字符串
-            Json::StreamWriterBuilder builder;
-            std::string jsonString = Json::writeString(builder, root);
-
-            messagesVector.push_back(jsonString);
+                messagesVector.push_back(jsonString);
+            }
+            else
+            {
+                std::cerr << "Failed to parse JSON from message field: " << reader.getFormattedErrorMessages();
+            }
         }
 
         sqlite3_finalize(stmt);

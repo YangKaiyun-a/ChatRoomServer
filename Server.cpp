@@ -5,10 +5,10 @@
 #include "Server.h"
 #include "global.h"
 #include "DBManager.h"
+#include "ThirdParty/json/json.h"
 
 #include <iostream>
 #include <cstring>
-#include <json/json.h>
 #include <arpa/inet.h>
 #include <thread>
 #include <algorithm>
@@ -133,6 +133,7 @@ void Server::handleClient(int clientSockfd, char *ip)
 
             break;
         }
+
         uint32_t dataLength = ntohl(messageLength);
 
         // 根据长度读取实际消息
@@ -159,7 +160,7 @@ void Server::handleClient(int clientSockfd, char *ip)
                 curUserName = userName;
             }
 
-            switch (messageType)
+            switch(messageType)
             {
                 case Login:
                 {
@@ -176,7 +177,13 @@ void Server::handleClient(int clientSockfd, char *ip)
                 case Normal:
                 {
                     //处理正常聊天信息
-                    handleNormalMessages(buffer);
+                    handleChatMessages(buffer);
+                    break;
+                }
+                case FileStart:
+                {
+                    //处理文件开始
+                    handleFileStart(buffer);
                     break;
                 }
                 default:
@@ -294,37 +301,46 @@ void Server::sendWithLengthPrefix(int sockfd, const std::string &message)
 }
 
 //处理正常聊天信息
-void Server::handleNormalMessages(const std::string &message)
+void Server::handleChatMessages(const std::string &buffer)
 {
     Json::Value root;
     Json::Reader reader;
 
-    if(reader.parse(message, root))
+    if(!reader.parse(buffer, root))
     {
-        std::string username = root["messages"]["username"].asString();
-        std::string chat = root["messages"]["chat"].asString();
+        std::cerr << "Failed to parse buffer: " << reader.getFormattedErrorMessages();
+        return;
+    }
 
-        //当前时间
-        std::string currentTimestamp = getCurrentTimestamp();
+    std::string currentTimestamp = getCurrentTimestamp();
+    root["messages"]["date"] = currentTimestamp;
+
+    //组合为新json
+    std::string newJson = root.toStyledString();
+
+    if(reader.parse(newJson, root))
+    {
+        //解析type
+        int type = root["type"].asInt();
+
+        //解析message
+        Json::Value messages = root["messages"];
+        Json::StreamWriterBuilder builder;
+        std::string message = Json::writeString(builder, messages);
+
+        //解析用户名
+        std::string userName = root["messages"]["username"].asString();
 
         //存入聊天记录表
-        if(!DBManager::instance()->addSingleChatHistory(username, chat, currentTimestamp))
+        if(!DBManager::instance()->addSingleChatHistory(userName, message, type, currentTimestamp))
         {
             return;
         }
 
-        //组合为新json
-        root["messages"]["date"] = currentTimestamp;
-        std::string updatedMessage = root.toStyledString();
-
-        //将JSON对象转换为字符串
-        Json::StreamWriterBuilder builder;
-        std::string jsonString = Json::writeString(builder, root);
-
         //转发给所有客户端
         for(int sockfd : m_clientSockets)
         {
-            sendWithLengthPrefix(sockfd, updatedMessage);
+            sendWithLengthPrefix(sockfd, newJson);
         }
     }
     else
@@ -352,6 +368,7 @@ std::string Server::getCurrentTimestamp()
     return ss.str();
 }
 
+//获取最新的20条聊天记录
 void Server::sendLastedChatMessages(int sockfd)
 {
     std::vector<std::string> messagesVector = DBManager::instance()->getRecordsFormChatHistory(20);
@@ -366,3 +383,27 @@ void Server::sendLastedChatMessages(int sockfd)
         sendWithLengthPrefix(sockfd, chatRecord);
     }
 }
+
+//处理文件开始
+void Server::handleFileStart(const std::string &buffer)
+{
+    Json::Value root;
+    Json::Reader reader;
+
+    if(!reader.parse(buffer, root))
+    {
+        std::cerr << "Failed to parse file buffer: " << reader.getFormattedErrorMessages();
+        return;
+    }
+
+    //时间戳
+    std::string currentTimestamp = getCurrentTimestamp();
+    //文件名和文件大小
+    std::string fileName = root["messages"]["fileName"].asString();
+    long fileSize = root["messages"]["fileSize"].asInt64();
+
+    std::cout << currentTimestamp << fileName << fileSize;
+
+}
+
+

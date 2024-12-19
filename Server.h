@@ -35,7 +35,9 @@ public:
     //发送消息
     static void sendWithLengthPrefix(int sockfd, const std::string &message);
     //处理正常聊天信息
-    void handleNormalMessages(const std::string &message);
+    void handleChatMessages(const std::string &buffer);
+    //处理文件开始
+    void handleFileStart(const std::string &buffer);
     //获取当前时间
     static std::string getCurrentTimestamp();
     //发送最新20条聊天记录给新登录用户
@@ -51,6 +53,7 @@ private:
         perror(msg);
         exit(1);
     }
+
 
 
 };

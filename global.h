@@ -12,7 +12,10 @@ enum MessageType
     Normal,         //正常聊天类型
     LoginResult,    //登录结果
     SignupResult,   //注册结果
-    OnlineUsers     //在线人数
+    OnlineUsers,    //在线人数
+    FileStart,      //开始传输文件
+    FileData,       //正在传输文件
+    FileEnd         //文件传输结束
 };
 
 enum LoginResultType

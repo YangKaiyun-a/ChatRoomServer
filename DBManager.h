@@ -28,8 +28,8 @@ public:
     //获取已登录用户表中的用户名
     std::vector<std::string> getLoggedInUserAllRecords();
     //添加一条记录到聊天记录表
-    bool addSingleChatHistory(const std::string& userName, const std::string& message, const std::string& timeStamp);
-    //获取一条聊天记录
+    bool addSingleChatHistory(const std::string& userName, const std::string& message, int messageType, const std::string& timeStamp);
+    //获取n条聊天记录
     std::vector<std::string> getRecordsFormChatHistory(int count);
 
 private:
